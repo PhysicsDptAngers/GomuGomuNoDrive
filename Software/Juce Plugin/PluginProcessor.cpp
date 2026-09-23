@@ -5,10 +5,6 @@
 // RUBBER ZENER CORE IMPLEMENTATION (POLARIZED 4D NEWTON-RAPHSON SOLVER)
 // ==============================================================================
 
-/**
- * Solves a 4x4 linear algebraic system (J * dX = F) using Gaussian elimination 
- * with partial row pivoting to prevent numerical instability.
- */
 bool RubberZener::solveLinearSystem4x4 (const double J[4][4], const double F[4], double dX[4]) {
     double A[4][5];
     for (int i = 0; i < 4; ++i) {
@@ -16,13 +12,12 @@ bool RubberZener::solveLinearSystem4x4 (const double J[4][4], const double F[4],
         A[i][4] = F[i];
     }
     
-    // Forward elimination with row pivoting
     for (int i = 0; i < 4; ++i) {
         int pivot = i;
         for (int j = i + 1; j < 4; ++j) {
             if (std::abs (A[j][i]) > std::abs (A[pivot][i])) pivot = j;
         }
-        if (std::abs (A[pivot][i]) < 1e-12) return false; // Singular matrix
+        if (std::abs (A[pivot][i]) < 1e-12) return false;
         
         if (pivot != i) {
             for (int k = 0; k < 5; ++k) std::swap (A[i][k], A[pivot][k]);
@@ -34,7 +29,6 @@ bool RubberZener::solveLinearSystem4x4 (const double J[4][4], const double F[4],
         }
     }
     
-    // Back-substitution
     for (int i = 3; i >= 0; --i) {
         dX[i] = A[i][4];
         for (int j = i + 1; j < 4; ++j) dX[i] -= A[i][j] * dX[j];
@@ -43,18 +37,9 @@ bool RubberZener::solveLinearSystem4x4 (const double J[4][4], const double F[4],
     return true;
 }
 
-/**
- * Resolves the 4 nonlinear differential-algebraic equations of the conducting branch.
- * 
- * Unlike ADAA, evaluation relies on direct point-wise exponential transport:
- * exp(v / Vt) and its exact continuous derivative exp(v / Vt) / Vt.
- * This completely avoids division-by-zero singularities and eliminates the 
- * wideband noise floor injected by zero-crossing boundary discontinuities.
- */
 void RubberZener::solve_ebers_moll_step (double X[4], double vin, double dt, double C, 
                                         double R_up, double R_low, double R_p, double R_s, int cap_pos) 
 {
-    // Snapshot of previous time step state vector for Backward Euler discretization
     const double X_prev[4] = { X[0], X[1], X[2], X[3] };
     
     for (int iter = 0; iter < 50; ++iter) {
@@ -63,8 +48,6 @@ void RubberZener::solve_ebers_moll_step (double X[4], double vin, double dt, dou
         const double Vbc = X[2];
         const double Vd  = X[3];
         
-        // --- 1. Evaluate Semiconductor Exponential Junctions ---
-        // Voltages are clipped to prevent floating-point overflow during early iterations
         const double x_be = juce::jlimit (-100.0, 80.0, Vbe / V_T);
         const double x_bc = juce::jlimit (-100.0, 80.0, Vbc / V_T);
         const double x_d  = juce::jlimit (-100.0, 80.0, Vd  / V_T);
@@ -73,50 +56,40 @@ void RubberZener::solve_ebers_moll_step (double X[4], double vin, double dt, dou
         const double exp_bc = std::exp (x_bc);
         const double exp_d  = std::exp (x_d);
 
-        // Exact analytical derivatives: d(exp(v/Vt))/dv = exp(v/Vt) / Vt
         const double dexp_dvbe = exp_be / V_T;
         const double dexp_dvbc = exp_bc / V_T;
         const double dexp_dvd  = exp_d  / V_T;
         
-        // --- 2. Macroscopic Currents (Ebers-Moll Model + Shockley Diode) ---
         const double ic = I_S * (exp_be - exp_bc) - (I_S / B_R) * (exp_bc - 1.0);
         const double ib = (I_S / B_F) * (exp_be - 1.0) + (I_S / B_R) * (exp_bc - 1.0);
         const double iD = I_SD * (exp_d - 1.0);
         
-        // Partial derivatives with respect to state variables
         const double dic_dvbe = I_S * dexp_dvbe;
         const double dic_dvbc = -I_S * dexp_dvbc - (I_S / B_R) * dexp_dvbc;
         const double dib_dvbe = (I_S / B_F) * dexp_dvbe;
         const double dib_dvbc = (I_S / B_R) * dexp_dvbc;
         const double diD_dvd  = I_SD * dexp_dvd;
         
-        // --- 3. Evaluate System Residues F(X) and Jacobian J(X) ---
-
-        // F1: Collector KVL across internal saturation resistor R_p
         const double f1 = Vbc - R_p * ic + Vup;
         const double df1_dvup = 1.0;
         const double df1_dvbe = -R_p * dic_dvbe;
         const double df1_dvbc = 1.0 - R_p * dic_dvbc;
         const double df1_dvd  = 0.0;
         
-        // F2: Base node KCL (containing reactive Backward Euler state derivative)
         double f2 = 0.0, df2_dvup = 0.0, df2_dvbe = 0.0, df2_dvbc = 0.0;
         if (C > 1e-12) {
             if (cap_pos == 0) {
-                // Mode 1: C is placed in parallel with R_up (state variable is V_up)
                 f2 = C * (Vup - X_prev[0]) / dt - Vbe / R_low - ib + Vup / R_up;
                 df2_dvup = C / dt + 1.0 / R_up;
                 df2_dvbe = -1.0 / R_low - dib_dvbe;
                 df2_dvbc = -dib_dvbc;
             } else {
-                // Mode 2: C is placed in parallel with R_low (state variable is V_be)
                 f2 = C * (Vbe - X_prev[1]) / dt + Vbe / R_low + ib - Vup / R_up;
                 df2_dvup = -1.0 / R_up;
                 df2_dvbe = C / dt + 1.0 / R_low + dib_dvbe;
                 df2_dvbc = dib_dvbc;
             }
         } else {
-            // Memoryless algebraic configuration (C = 0)
             f2 = -Vbe / R_low - ib + Vup / R_up;
             df2_dvup = 1.0 / R_up;
             df2_dvbe = -1.0 / R_low - dib_dvbe;
@@ -124,7 +97,6 @@ void RubberZener::solve_ebers_moll_step (double X[4], double vin, double dt, dou
         }
         const double df2_dvd = 0.0;
 
-        // F3: Dipole input node current conservation
         double f3 = 0.0, df3_dvup = 0.0, df3_dvbe = 0.0, df3_dvbc = 0.0;
         if (cap_pos == 0) {
             f3 = iD - ic - ib - Vbe / R_low;
@@ -139,7 +111,6 @@ void RubberZener::solve_ebers_moll_step (double X[4], double vin, double dt, dou
         }
         const double df3_dvd = diD_dvd;
         
-        // F4: Global input loop KVL
         const double f4 = vin - R_s * iD - Vd - Vup - Vbe;
         const double df4_dvup = -1.0;
         const double df4_dvbe = -1.0;
@@ -154,25 +125,21 @@ void RubberZener::solve_ebers_moll_step (double X[4], double vin, double dt, dou
             { df4_dvup, df4_dvbe, df4_dvbc, df4_dvd }
         };
         
-        // --- 4. Matrix Inversion & Newton Step ---
         double dX[4] = { 0.0, 0.0, 0.0, 0.0 };
         if (!solveLinearSystem4x4 (J, F, dX)) {
             for (int k = 0; k < 4; ++k) dX[k] = F[k] * 0.01; 
         }
         
-        // Step damping to prevent wild oscillations across steep gradients
         constexpr double max_step = 1.0;
         for (int k = 0; k < 4; ++k) {
             const double step = juce::jlimit (-max_step, max_step, dX[k]);
             X[k] -= step;
         }
         
-        // Physical clamping: silicon PN junctions cannot exceed ~0.9 V forward bias
         X[1] = std::min (X[1], 0.9);
         X[2] = std::min (X[2], 0.9);
         X[3] = std::min (X[3], 0.9);
         
-        // Convergence check (infinity norm of update vector)
         double max_err = 0.0;
         for (int k = 0; k < 4; ++k) {
             if (std::abs (dX[k]) > max_err) max_err = std::abs (dX[k]);
@@ -181,14 +148,10 @@ void RubberZener::solve_ebers_moll_step (double X[4], double vin, double dt, dou
     }
 }
 
-/**
- * Top-level sample processing routine handling mutual antiparallel branch decoupling.
- */
 double RubberZener::processSample (double vin, double R_in, double dt, 
                                   double alpha_up, double R_k_up, double R_p_up, double C_up, int pos_up,
                                   double alpha_dn, double R_k_dn, double R_p_dn, double C_dn, int pos_dn) 
 {
-    // Potentiometer voltage divider resistance values with padding stoppers
     const double R_up_U  = (1.0 - alpha_up) * 50000.0 + 1000.0;
     const double R_low_U = alpha_up * 50000.0 + 4700.0;
     const double R_s_U   = R_in + R_k_up + R_D;
@@ -200,42 +163,39 @@ double RubberZener::processSample (double vin, double R_in, double dt,
     double v_out = vin;
 
     if (vin >= 0.0) {
-        // --- POSITIVE HALF-WAVE: UP BRANCH IS ACTIVE ---
         solve_ebers_moll_step (X_up, vin, dt, C_up, R_up_U, R_low_U, R_p_up, R_s_U, pos_up);
-        
-        // Direct diode conduction current
         const double x_d = juce::jlimit (-100.0, 80.0, X_up[3] / V_T);
         const double iD  = I_SD * (std::exp (x_d) - 1.0);
         v_out = vin - R_in * iD;
 
-        // Inactive DOWN branch: autonomous linear RC discharge through the bridge
         if (C_dn > 1e-12) {
             const double R_bleed = (pos_dn == 0) ? R_up_D : R_low_D;
             const int state_idx  = (pos_dn == 0) ? 0 : 1;
             X_dn[state_idx] *= std::exp (-dt / (R_bleed * C_dn));
+        } else {
+            X_dn[0] = 0.0;
+            X_dn[1] = 0.0;
         }
-        // Junctions shut off instantaneously in reverse bias
         X_dn[2] = 0.0; 
         X_dn[3] = 0.0; 
         if (pos_dn == 0) X_dn[1] = 0.0; else X_dn[0] = 0.0;
     } 
     else {
-        // --- NEGATIVE HALF-WAVE: DOWN BRANCH IS ACTIVE ---
-        // Invert input voltage for symmetric branch solver
         solve_ebers_moll_step (X_dn, -vin, dt, C_dn, R_up_D, R_low_D, R_p_dn, R_s_D, pos_dn);
-        
         const double x_d = juce::jlimit (-100.0, 80.0, X_dn[3] / V_T);
         const double iD  = I_SD * (std::exp (x_d) - 1.0);
         v_out = vin + R_in * iD;
 
-        // Inactive UP branch: autonomous linear RC discharge through the bridge
         if (C_up > 1e-12) {
             const double R_bleed = (pos_up == 0) ? R_up_U : R_low_U;
             const int state_idx  = (pos_up == 0) ? 0 : 1;
             X_up[state_idx] *= std::exp (-dt / (R_bleed * C_up));
+        } else {
+            X_up[0] = 0.0;
+            X_up[1] = 0.0;
         }
         X_up[2] = 0.0; 
-        X_up[3] = 0.0;
+        X_up[3] = 0.0; 
         if (pos_up == 0) X_up[1] = 0.0; else X_up[0] = 0.0;
     }
 
@@ -254,6 +214,8 @@ GomuGomuNoDrive::GomuGomuNoDrive()
 {
     inGainParam      = apvts.getRawParameterValue ("GAIN");
     outGainParam     = apvts.getRawParameterValue ("OUT_GAIN");
+    voicingParam     = apvts.getRawParameterValue ("VOICING");
+    toneParam        = apvts.getRawParameterValue ("TONE");
     
     threshPlusParam  = apvts.getRawParameterValue ("THRESH_P"); 
     capPlusParam     = apvts.getRawParameterValue ("CAP_P");
@@ -287,6 +249,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout GomuGomuNoDrive::createParam
     
     params.push_back (std::make_unique<juce::AudioParameterFloat>("GAIN", "Drive Input", 0.0f, 1.0f, 0.5f));
     params.push_back (std::make_unique<juce::AudioParameterFloat>("OUT_GAIN", "Output Level (dB)", -24.0f, 12.0f, 0.0f));
+
+    juce::StringArray voicingChoices = { "TS-VOICE", "RAT-VOICE", "MUFF-VOICE", "LAB / CUSTOM" };
+    params.push_back (std::make_unique<juce::AudioParameterChoice>("VOICING", "Voicing Mode", voicingChoices, 0));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>("TONE", "Tone", 0.0f, 1.0f, 0.5f));
 
     juce::StringArray transChoices = { "BJT", "MOSFET" };
     juce::StringArray capPosChoices = { "Parallel R_up", "Parallel R_low" };
@@ -359,27 +325,101 @@ void GomuGomuNoDrive::updateFilters() {
     double sr = getSampleRate();
     if (sr <= 0.0) return;
 
-    constexpr float qFactor = 1.4f;
     bool srChanged = (sr != lastSampleRate);
     lastSampleRate = sr;
 
-    for (size_t b = 0; b < numEqBands; ++b) {
-        float preGainDb = (preEqParams[b] != nullptr) ? preEqParams[b]->load() : 0.0f;
-        if (srChanged || preGainDb != lastPreGains[b] || preEqFilters[0][b].coefficients == nullptr) {
-            lastPreGains[b] = preGainDb;
-            float preGainLin = juce::Decibels::decibelsToGain (preGainDb);
-            auto preCoeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sr, eqFrequencies[b], qFactor, preGainLin);
-            preEqFilters[0][b].coefficients = preCoeffs;
-            preEqFilters[1][b].coefficients = preCoeffs;
-        }
+    int currentVoicing = (voicingParam != nullptr) ? static_cast<int>(voicingParam->load()) : 0;
+    float currentTone   = (toneParam != nullptr) ? toneParam->load() : 0.5f;
+    float currentDrive  = (inGainParam != nullptr) ? inGainParam->load() : 0.5f;
 
-        float postGainDb = (postEqParams[b] != nullptr) ? postEqParams[b]->load() : 0.0f;
-        if (srChanged || postGainDb != lastPostGains[b] || postEqFilters[0][b].coefficients == nullptr) {
-            lastPostGains[b] = postGainDb;
-            float postGainLin = juce::Decibels::decibelsToGain (postGainDb);
-            auto postCoeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sr, eqFrequencies[b], qFactor, postGainLin);
-            postEqFilters[0][b].coefficients = postCoeffs;
-            postEqFilters[1][b].coefficients = postCoeffs;
+    bool voicingChanged = (currentVoicing != lastVoicing) 
+                       || (std::abs (currentTone - lastTone) > 0.005f) 
+                       || (std::abs (currentDrive - lastDrive) > 0.01f);
+
+    if (srChanged || voicingChanged) {
+        lastVoicing = currentVoicing;
+        lastTone    = currentTone;
+        lastDrive   = currentDrive;
+
+        if (currentVoicing == Voicing_TS) {
+            // TS-VOICE: Filtre 1er ordre doux à 160 Hz (ne massacre pas les 82 Hz de la corde Mi grave)
+            auto pre1 = juce::dsp::IIR::Coefficients<float>::makeFirstOrderHighPass (sr, 160.0f);
+            auto pre2 = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sr, 850.0f, 1.0f, juce::Decibels::decibelsToGain (5.0f));
+            
+            auto post1 = juce::dsp::IIR::Coefficients<float>::makeLowPass (sr, 5800.0f, 0.707f);
+            auto post2 = juce::dsp::IIR::Coefficients<float>::makeLowShelf (sr, 120.0f, 0.707f, juce::Decibels::decibelsToGain (2.5f));
+            
+            float toneDb = -8.0f + currentTone * 16.0f;
+            auto toneC = juce::dsp::IIR::Coefficients<float>::makeHighShelf (sr, 2500.0f, 0.707f, juce::Decibels::decibelsToGain (toneDb));
+
+            for (size_t ch = 0; ch < 2; ++ch) {
+                preVoicingFilters1[ch].coefficients = pre1;
+                preVoicingFilters2[ch].coefficients = pre2;
+                postVoicingFilters1[ch].coefficients = post1;
+                postVoicingFilters2[ch].coefficients = post2;
+                toneFilters[ch].coefficients = toneC;
+            }
+        }
+        else if (currentVoicing == Voicing_RAT) {
+            // RAT-VOICE: Coupe-bas 1er ordre 220 Hz pour assainir l'attaque, +6 dB de thump à 100 Hz en sortie
+            auto pre1 = juce::dsp::IIR::Coefficients<float>::makeFirstOrderHighPass (sr, 220.0f);
+            auto pre2 = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sr, 2200.0f, 1.3f, juce::Decibels::decibelsToGain (4.5f));
+            
+            auto post1 = juce::dsp::IIR::Coefficients<float>::makeLowPass (sr, 7200.0f, 0.65f);
+            auto post2 = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sr, 100.0f, 1.8f, juce::Decibels::decibelsToGain (6.0f)); // THUMP PALM-MUTE
+
+            float toneCutoff = 1800.0f * std::pow (5.5f, currentTone); // 1.8 kHz -> 9.9 kHz
+            auto toneC = juce::dsp::IIR::Coefficients<float>::makeLowPass (sr, toneCutoff, 0.707f);
+
+            for (size_t ch = 0; ch < 2; ++ch) {
+                preVoicingFilters1[ch].coefficients = pre1;
+                preVoicingFilters2[ch].coefficients = pre2;
+                postVoicingFilters1[ch].coefficients = post1;
+                postVoicingFilters2[ch].coefficients = post2;
+                toneFilters[ch].coefficients = toneC;
+            }
+        }
+        else if (currentVoicing == Voicing_Muff) {
+            // MUFF-VOICE: Assise basse à 80 Hz, scoop à 450 Hz, boost massif de résonance à 90 Hz
+            auto pre1 = juce::dsp::IIR::Coefficients<float>::makeFirstOrderHighPass (sr, 80.0f);
+            auto pre2 = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sr, 280.0f, 1.0f, juce::Decibels::decibelsToGain (3.0f));
+            
+            auto post1 = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sr, 450.0f, 0.9f, juce::Decibels::decibelsToGain (-6.5f)); // SCOOP
+            auto post2 = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sr, 90.0f, 1.5f, juce::Decibels::decibelsToGain (6.5f));  // BASS BODY
+
+            float toneDb = -10.0f + currentTone * 20.0f;
+            auto toneC = juce::dsp::IIR::Coefficients<float>::makeHighShelf (sr, 1400.0f, 0.707f, juce::Decibels::decibelsToGain (toneDb));
+
+            for (size_t ch = 0; ch < 2; ++ch) {
+                preVoicingFilters1[ch].coefficients = pre1;
+                preVoicingFilters2[ch].coefficients = pre2;
+                postVoicingFilters1[ch].coefficients = post1;
+                postVoicingFilters2[ch].coefficients = post2;
+                toneFilters[ch].coefficients = toneC;
+            }
+        }
+    }
+
+    if (currentVoicing == Voicing_Lab) {
+        constexpr float qFactor = 1.4f;
+        for (size_t b = 0; b < numEqBands; ++b) {
+            float preGainDb = (preEqParams[b] != nullptr) ? preEqParams[b]->load() : 0.0f;
+            if (srChanged || preGainDb != lastPreGains[b] || preEqFilters[0][b].coefficients == nullptr) {
+                lastPreGains[b] = preGainDb;
+                float preGainLin = juce::Decibels::decibelsToGain (preGainDb);
+                auto preCoeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sr, eqFrequencies[b], qFactor, preGainLin);
+                preEqFilters[0][b].coefficients = preCoeffs;
+                preEqFilters[1][b].coefficients = preCoeffs;
+            }
+
+            float postGainDb = (postEqParams[b] != nullptr) ? postEqParams[b]->load() : 0.0f;
+            if (srChanged || postGainDb != lastPostGains[b] || postEqFilters[0][b].coefficients == nullptr) {
+                lastPostGains[b] = postGainDb;
+                float postGainLin = juce::Decibels::decibelsToGain (postGainDb);
+                auto postCoeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sr, eqFrequencies[b], qFactor, postGainLin);
+                postEqFilters[0][b].coefficients = postCoeffs;
+                postEqFilters[1][b].coefficients = postCoeffs;
+            }
         }
     }
 }
@@ -388,8 +428,6 @@ void GomuGomuNoDrive::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     size_t numChannels = static_cast<size_t>(juce::jmax (1, getTotalNumOutputChannels()));
     
-    // Polyphase IIR Half-Band Oversampling (Order 1 = 2^1 = 2x oversampling factor).
-    // Provides >90 dB stopband rejection with minimal phase distortion and negligible CPU cost.
     oversampler = std::make_unique<juce::dsp::Oversampling<float>>(
         numChannels, 1, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR);
     oversampler->initProcessing (static_cast<size_t>(samplesPerBlock));
@@ -409,6 +447,7 @@ void GomuGomuNoDrive::prepareToPlay (double sampleRate, int samplesPerBlock)
     cabConvolution.reset();
 
     lastSampleRate = 0.0;
+    lastVoicing = -1;
 
     juce::dsp::ProcessSpec filterSpec;
     filterSpec.sampleRate = sampleRate;
@@ -416,6 +455,17 @@ void GomuGomuNoDrive::prepareToPlay (double sampleRate, int samplesPerBlock)
     filterSpec.numChannels = 1;
 
     for (size_t ch = 0; ch < 2; ++ch) {
+        preVoicingFilters1[ch].prepare (filterSpec);
+        preVoicingFilters1[ch].reset();
+        preVoicingFilters2[ch].prepare (filterSpec);
+        preVoicingFilters2[ch].reset();
+        postVoicingFilters1[ch].prepare (filterSpec);
+        postVoicingFilters1[ch].reset();
+        postVoicingFilters2[ch].prepare (filterSpec);
+        postVoicingFilters2[ch].reset();
+        toneFilters[ch].prepare (filterSpec);
+        toneFilters[ch].reset();
+
         for (size_t b = 0; b < numEqBands; ++b) {
             preEqFilters[ch][b].prepare (filterSpec);
             preEqFilters[ch][b].reset();
@@ -462,22 +512,12 @@ void GomuGomuNoDrive::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         }
     }
 
-    // 1. Input Drive Scaling & Op-Amp Active Gain
-    double alpha_in = (inGainParam != nullptr) ? static_cast<double>(*inGainParam) : 0.5; 
-    double R_t1 = 4700.0;
-    double R_t2 = 4700.0;
-    double P_gain = 50000.0;
-    double R_up_div = R_t1 + (1.0 - alpha_in) * P_gain;
-    double R_dn_div = R_t2 + alpha_in * P_gain;
-    double G_in = R_dn_div / (R_up_div + R_dn_div);
+    // 1. Étage de Drive dynamique (plage de +0 dB à +42 dB)
+    double alpha_in = (inGainParam != nullptr) ? static_cast<double>(inGainParam->load()) : 0.5;
+    double driveDb = alpha_in * 42.0; 
+    double toVoltsScale = 0.5 * juce::Decibels::decibelsToGain (driveDb);
 
-    constexpr double guitarPeakVolts = 0.1; 
-    double activeOpAmpBoost = 1.0 + (alpha_in * 74.0); 
-    double toVoltsScale = guitarPeakVolts * activeOpAmpBoost;
-
-    buffer.applyGain (static_cast<float>(G_in));
-
-    // 1b. Hardware DC-Blocker Filter (15 Hz) to eliminate soundcard/ADC offsets
+    // 1b. DC-Blocker matériel (15 Hz)
     double sr = getSampleRate();
     float R_dc = (sr > 0.0) ? static_cast<float>(1.0 - (juce::MathConstants<double>::twoPi * 15.0 / sr)) : 0.998f;
     int maxChannels = std::min (buffer.getNumChannels(), 2);
@@ -500,28 +540,35 @@ void GomuGomuNoDrive::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     // Capture Input Signal Witness
     int startIdx = scopeData.writeIndex.load (std::memory_order_relaxed);
     int wIdx = startIdx;
-    float pPlus = 0.0f, pMinus = 0.0f;
     for (int i = 0; i < numSamples; ++i) {
         float inS = buffer.getSample (0, i);
-        if (inS > pPlus) pPlus = inS;
-        if (inS < pMinus) pMinus = inS;
         scopeData.bufferIn[static_cast<size_t>(wIdx)] = inS;
         wIdx = (wIdx + 1) % ScopeData::bufferSize;
     }
 
-    // 2. Pre-EQ Processing (Linear tone-shaping prior to saturation)
+    // 2. Pre-Saturation Filtering
+    int currentVoicing = (voicingParam != nullptr) ? static_cast<int>(voicingParam->load()) : 0;
     for (int ch = 0; ch < maxChannels; ++ch) {
         float* chData = buffer.getWritePointer (ch);
-        for (int i = 0; i < numSamples; ++i) {
-            float s = chData[i];
-            for (size_t b = 0; b < numEqBands; ++b) {
-                s = preEqFilters[static_cast<size_t>(ch)][b].processSample (s);
+        if (currentVoicing == Voicing_Lab) {
+            for (int i = 0; i < numSamples; ++i) {
+                float s = chData[i];
+                for (size_t b = 0; b < numEqBands; ++b) {
+                    s = preEqFilters[static_cast<size_t>(ch)][b].processSample (s);
+                }
+                chData[i] = s;
             }
-            chData[i] = s;
+        } else {
+            for (int i = 0; i < numSamples; ++i) {
+                float s = chData[i];
+                s = preVoicingFilters1[static_cast<size_t>(ch)].processSample (s);
+                s = preVoicingFilters2[static_cast<size_t>(ch)].processSample (s);
+                chData[i] = s;
+            }
         }
     }
 
-    // 3. Polyphase Half-Band Oversampling (2x Interpolation)
+    // 3. Polyphase Half-Band Oversampling (2x)
     juce::dsp::AudioBlock<float> block (buffer);
     juce::dsp::AudioBlock<float> osBlock;
     if (oversampler != nullptr) osBlock = oversampler->processSamplesUp (block);
@@ -545,20 +592,27 @@ void GomuGomuNoDrive::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     double C_dn     = (capMinusParam != nullptr)    ? std::max (static_cast<double>(*capMinusParam) * 1e-9, 1e-15) : 1e-7;
     int pos_dn      = (capPosMinusParam != nullptr) ? static_cast<int>(*capPosMinusParam) : 0;
 
-    // 4. Real-Time Rubber Zener Nonlinear Solver Loop
+    // 4. Boucle non-linéaire Rubber Zener & mesure de tension crête réelle
+    float pPlusV = 0.0f, pMinusV = 0.0f;
+
     for (size_t ch = 0; ch < osBlock.getNumChannels(); ++ch) {
         float* data = osBlock.getChannelPointer (ch);
         if (ch >= 2) continue; 
         for (size_t i = 0; i < osBlock.getNumSamples(); ++i) {
             double vin_volts = static_cast<double>(data[i]) * toVoltsScale; 
             
+            if (ch == 0) {
+                if (vin_volts > pPlusV) pPlusV = static_cast<float>(vin_volts);
+                if (vin_volts < pMinusV) pMinusV = static_cast<float>(vin_volts);
+            }
+
             double vout_volts = clippers[ch].processSample (
                 vin_volts, R_in_Thevenin, dt,
                 alpha_up, R_k_up, R_p_up, C_up, pos_up,
                 alpha_dn, R_k_dn, R_p_dn, C_dn, pos_dn
             );
             
-            constexpr double nominalCeilingVolts = 3.0; 
+            constexpr double nominalCeilingVolts = 1.8; 
             data[i] = static_cast<float>(vout_volts / nominalCeilingVolts);
         }
     }
@@ -566,15 +620,25 @@ void GomuGomuNoDrive::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     // 5. Polyphase Half-Band Oversampling (2x Decimation)
     if (oversampler != nullptr) oversampler->processSamplesDown (block);
 
-    // 6. Post-EQ Processing (Harmonic spectrum smoothing)
+    // 6. Post-Saturation Filtering & Tone Shaping
     for (int ch = 0; ch < maxChannels; ++ch) {
         float* chData = buffer.getWritePointer (ch);
-        for (int i = 0; i < numSamples; ++i) {
-            float s = chData[i];
-            for (size_t b = 0; b < numEqBands; ++b) {
-                s = postEqFilters[static_cast<size_t>(ch)][b].processSample (s);
+        if (currentVoicing == Voicing_Lab) {
+            for (int i = 0; i < numSamples; ++i) {
+                float s = chData[i];
+                for (size_t b = 0; b < numEqBands; ++b) {
+                    s = postEqFilters[static_cast<size_t>(ch)][b].processSample (s);
+                }
+                chData[i] = s;
             }
-            chData[i] = s;
+        } else {
+            for (int i = 0; i < numSamples; ++i) {
+                float s = chData[i];
+                s = postVoicingFilters1[static_cast<size_t>(ch)].processSample (s);
+                s = postVoicingFilters2[static_cast<size_t>(ch)].processSample (s);
+                s = toneFilters[static_cast<size_t>(ch)].processSample (s);
+                chData[i] = s;
+            }
         }
     }
 
@@ -596,8 +660,8 @@ void GomuGomuNoDrive::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     buffer.applyGain (outGainLin);
 
     scopeData.writeIndex.store (wIdx, std::memory_order_release);
-    scopeData.peakInPlus.store (pPlus, std::memory_order_relaxed);
-    scopeData.peakInMinus.store (pMinus, std::memory_order_relaxed);
+    scopeData.peakInVoltsPlus.store (pPlusV, std::memory_order_relaxed);
+    scopeData.peakInVoltsMinus.store (pMinusV, std::memory_order_relaxed);
 }
 
 const juce::String GomuGomuNoDrive::getName() const { return JucePlugin_Name; }

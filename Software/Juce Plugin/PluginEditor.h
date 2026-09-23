@@ -113,31 +113,32 @@ private:
     GomuGomuNoDrive& audioProcessor;
     PedalLookAndFeel customLookAndFeel;
 
-    // Graphic EQs
     GraphicEqComponent preEqComponent;
     GraphicEqComponent postEqComponent;
 
-    // Scopes & Indicators
     TransferCurveScope oscIU;
     TimeDomainScope oscTime;
     LedIndicator led;
 
-    // Center Controls
-    juce::Slider driveSlider, outputSlider;
+    // Commandes centrales
+    juce::Slider driveSlider, outputSlider, toneSlider;
+    juce::ComboBox voicingSelector;
     juce::TextButton footswitch;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> driveAtt, outputAtt;
 
-    // West Branch Controls (UP / 西)
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> driveAtt, outputAtt, toneAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> voicingAtt;
+
+    // Aile Ouest (UP / 西)
     juce::Slider clipWestSlider, edgeWestSlider, kneeWestSlider, pinchWestSlider;
     juce::Slider capWestSwitch; 
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> clipWestAtt, edgeWestAtt, kneeWestAtt, pinchWestAtt, capWestAtt;
 
-    // East Branch Controls (DOWN / 東)
+    // Aile Est (DOWN / 東)
     juce::Slider clipEastSlider, edgeEastSlider, kneeEastSlider, pinchEastSlider;
     juce::Slider capEastSwitch;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> clipEastAtt, edgeEastAtt, kneeEastAtt, pinchEastAtt, capEastAtt;
 
-    // Cabinet Section
+    // Section Cab IR
     CabToggleButton cabToggle;
     juce::ComboBox cabSelector;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> cabEnableAtt;
