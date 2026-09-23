@@ -1,0 +1,41 @@
+# --- Build & Compilers (CMake / JUCE / C++) ---
+build/
+bin/
+lib/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.ninja
+.ninja_*
+CompileFlags.txt
+
+# --- Python (Simulation & Data Scripts) ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.npy
+*.npz
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# --- KiCad (Backups and Lock Files) ---
+*-save.kicad_pcb
+*-save.kicad_sch
+*.kicad_prl
+*.lck
+*.bak
+_autosave-*
+fp-info-cache
+
+# --- OS, IDEs & Text Editors (Linux / Windows / VS Code) ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.log

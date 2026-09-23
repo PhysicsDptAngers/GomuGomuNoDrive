@@ -1,0 +1,4 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "Rubber_drive_hard") (type "KiCad") (uri "/home/matth/Documents/ArticleEnCours/RubberDrive/Kicad/Rubber_drive_hard") (options "") (descr ""))
+)

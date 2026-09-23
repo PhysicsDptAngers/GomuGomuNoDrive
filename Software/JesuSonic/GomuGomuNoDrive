@@ -1,0 +1,278 @@
+desc:Rubber Zener (Dual ODE Clipper)
+
+slider1:0.5<0.0, 1.0, 0.01>Drive Input
+slider2:2.0<0.1, 5.0, 0.01>Threshold + (UP)
+slider3:100.0<0.0, 1000.0, 1.0>Capacitor + (nF)
+slider4:1000.0<0.0, 10000.0, 10.0>Pinch + (Ohms)
+slider5:10.0<0.0, 10000.0, 1.0>Knee R_k + (Ohms)
+slider6:0<0, 1, 1{Parallel R_up,Parallel R_low}>Cap Pos +
+slider7:2.0<0.1, 5.0, 0.01>Threshold - (DOWN)
+slider8:100.0<0.0, 1000.0, 1.0>Capacitor - (nF)
+slider9:1000.0<0.0, 10000.0, 10.0>Pinch - (Ohms)
+slider10:10.0<0.0, 10000.0, 1.0>Knee R_k - (Ohms)
+slider11:0<0, 1, 1{Parallel R_up,Parallel R_low}>Cap Pos -
+
+@init
+// --- CONSTANTES PHYSIQUES ---
+V_T = 0.026;
+I_S = 7.049e-15;
+B_F = 493.2;
+B_R = 2.886;
+I_SD = 21e-9;
+R_D = 1.0;
+
+// --- CARTOGRAPHIE MÉMOIRE JSFX ---
+// L_state = 0   (0-3: X_up, 4-7: X_dn)
+// R_state = 100 (100-103: X_up, 104-107: X_dn)
+mat_J  = 1000; // 16 slots (4x4)
+mat_F  = 1020; // 4 slots
+mat_dX = 1030; // 4 slots
+mat_A  = 1040; // 20 slots (4x5 Augmented Matrix)
+
+// --- FONCTIONS MATHÉMATIQUES ---
+function adaa_exp(v, vp, Vt)
+  local(x, xp, dx, ex, exp_p)
+(
+    x = max(min(v / Vt, 80.0), -100.0);
+    xp = max(min(vp / Vt, 80.0), -100.0);
+    dx = x - xp;
+    
+    abs(dx) > 1e-4 ? (
+        ex = exp(x);
+        exp_p = exp(xp);
+        adaa_E = (ex - exp_p) / dx;
+        adaa_dE_dx = (ex * dx - (ex - exp_p)) / (dx * dx) / Vt;
+    ) : (
+        exp_p = exp(xp);
+        adaa_E = exp_p * (1.0 + dx / 2.0 + (dx * dx) / 6.0);
+        adaa_dE_dx = exp_p * (0.5 + dx / 3.0) / Vt;
+    );
+);
+
+// Solveur par élimination de Gauss-Jordan (optimisé pour la matrice 4x4 globale)
+function solveLinearSystem4x4()
+  local(i, j, k, pivot, max_val, abs_val, tmp, factor, success)
+(
+    // Build Augmented Matrix
+    i = 0;
+    loop(4,
+        j = 0; loop(4, mat_A[i*5 + j] = mat_J[i*4 + j]; j += 1; );
+        mat_A[i*5 + 4] = mat_F[i];
+        i += 1;
+    );
+
+    success = 1;
+    i = 0;
+    while(i < 4 && success) (
+        pivot = i;
+        max_val = abs(mat_A[pivot*5 + i]);
+        j = i + 1;
+        loop(3 - i,
+            abs_val = abs(mat_A[j*5 + i]);
+            abs_val > max_val ? ( pivot = j; max_val = abs_val; );
+            j += 1;
+        );
+
+        max_val < 1e-12 ? success = 0 : (
+            pivot != i ? (
+                k = 0; loop(5,
+                    tmp = mat_A[i*5 + k];
+                    mat_A[i*5 + k] = mat_A[pivot*5 + k];
+                    mat_A[pivot*5 + k] = tmp;
+                    k += 1;
+                );
+            );
+
+            j = i + 1;
+            loop(3 - i,
+                factor = mat_A[j*5 + i] / mat_A[i*5 + i];
+                k = i; loop(5 - i, mat_A[j*5 + k] -= factor * mat_A[i*5 + k]; k += 1; );
+                j += 1;
+            );
+        );
+        i += 1;
+    );
+
+    success ? (
+        i = 3;
+        loop(4,
+            mat_dX[i] = mat_A[i*5 + 4];
+            j = i + 1;
+            loop(3 - i, mat_dX[i] -= mat_A[i*5 + j] * mat_dX[j]; j += 1; );
+            mat_dX[i] /= mat_A[i*5 + i];
+            i -= 1;
+        );
+    );
+    success;
+);
+
+// Le moteur Newton-Raphson
+function solve_ebers_moll_step(state_ptr, vin, dt, C, R_up, R_low, R_p, R_s, cap_pos)
+  local(iter, max_err, Vup, Vbe, Vbc, Vd, X_prev0, X_prev1, X_prev2, X_prev3,
+        ic, ib, iD, dic_dvbe, dic_dvbc, dib_dvbe, dib_dvbc, diD_dvd,
+        f1, f2, f3, f4, df1_dvup, df1_dvbe, df1_dvbc, df1_dvd,
+        df2_dvup, df2_dvbe, df2_dvbc, df2_dvd, df3_dvup, df3_dvbe, df3_dvbc, df3_dvd,
+        df4_dvup, df4_dvbe, df4_dvbc, df4_dvd, step, k, success, res_be_E, res_be_dE, res_bc_E, res_bc_dE, res_d_E, res_d_dE)
+(
+    X_prev0 = state_ptr[0]; X_prev1 = state_ptr[1]; X_prev2 = state_ptr[2]; X_prev3 = state_ptr[3];
+    iter = 0;
+    max_err = 1.0;
+
+    while(iter < 50 && max_err >= 1e-6) (
+        Vup = state_ptr[0]; Vbe = state_ptr[1]; Vbc = state_ptr[2]; Vd = state_ptr[3];
+
+        adaa_exp(Vbe, X_prev1, V_T); res_be_E = adaa_E; res_be_dE = adaa_dE_dx;
+        adaa_exp(Vbc, X_prev2, V_T); res_bc_E = adaa_E; res_bc_dE = adaa_dE_dx;
+        adaa_exp(Vd,  X_prev3, V_T); res_d_E  = adaa_E; res_d_dE  = adaa_dE_dx;
+
+        ic = I_S * (res_be_E - res_bc_E) - (I_S / B_R) * (res_bc_E - 1.0);
+        ib = (I_S / B_F) * (res_be_E - 1.0) + (I_S / B_R) * (res_bc_E - 1.0);
+        iD = I_SD * (res_d_E - 1.0);
+
+        dic_dvbe = I_S * res_be_dE;
+        dic_dvbc = -I_S * res_bc_dE - (I_S / B_R) * res_bc_dE;
+        dib_dvbe = (I_S / B_F) * res_be_dE;
+        dib_dvbc = (I_S / B_R) * res_bc_dE;
+        diD_dvd  = I_SD * res_d_dE;
+
+        f1 = Vbc - R_p * ic + Vup;
+        df1_dvup = 1.0; df1_dvbe = -R_p * dic_dvbe; df1_dvbc = 1.0 - R_p * dic_dvbc; df1_dvd = 0.0;
+
+        C > 1e-12 ? (
+            cap_pos == 0 ? (
+                f2 = C * (Vup - X_prev0) / dt - Vbe / R_low - ib + Vup / R_up;
+                df2_dvup = C / dt + 1.0 / R_up; df2_dvbe = -1.0 / R_low - dib_dvbe; df2_dvbc = -dib_dvbc;
+            ) : (
+                f2 = C * (Vbe - X_prev1) / dt + Vbe / R_low + ib - Vup / R_up;
+                df2_dvup = -1.0 / R_up; df2_dvbe = C / dt + 1.0 / R_low + dib_dvbe; df2_dvbc = dib_dvbc;
+            );
+        ) : (
+            f2 = -Vbe / R_low - ib + Vup / R_up;
+            df2_dvup = 1.0 / R_up; df2_dvbe = -1.0 / R_low - dib_dvbe; df2_dvbc = -dib_dvbc;
+        );
+        df2_dvd = 0.0;
+
+        cap_pos == 0 ? (
+            f3 = iD - ic - ib - Vbe / R_low;
+            df3_dvup = 0.0; df3_dvbe = -dic_dvbe - dib_dvbe - 1.0 / R_low; df3_dvbc = -dic_dvbc - dib_dvbc; df3_dvd = diD_dvd;
+        ) : (
+            f3 = iD - ic - Vup / R_up;
+            df3_dvup = -1.0 / R_up; df3_dvbe = -dic_dvbe; df3_dvbc = -dic_dvbc; df3_dvd = diD_dvd;
+        );
+
+        f4 = vin - R_s * iD - Vd - Vup - Vbe;
+        df4_dvup = -1.0; df4_dvbe = -1.0; df4_dvbc = 0.0; df4_dvd = -R_s * diD_dvd - 1.0;
+
+        mat_F[0] = f1; mat_F[1] = f2; mat_F[2] = f3; mat_F[3] = f4;
+        mat_J[0] = df1_dvup; mat_J[1] = df1_dvbe; mat_J[2] = df1_dvbc; mat_J[3] = df1_dvd;
+        mat_J[4] = df2_dvup; mat_J[5] = df2_dvbe; mat_J[6] = df2_dvbc; mat_J[7] = df2_dvd;
+        mat_J[8] = df3_dvup; mat_J[9] = df3_dvbe; mat_J[10]= df3_dvbc; mat_J[11]= df3_dvd;
+        mat_J[12]= df4_dvup; mat_J[13]= df4_dvbe; mat_J[14]= df4_dvbc; mat_J[15]= df4_dvd;
+
+        success = solveLinearSystem4x4();
+        !success ? ( k = 0; loop(4, mat_dX[k] = mat_F[k] * 0.01; k += 1; ); );
+
+        max_err = 0.0;
+        k = 0;
+        loop(4,
+            step = max(min(mat_dX[k], 1.0), -1.0);
+            state_ptr[k] -= step;
+            abs(mat_dX[k]) > max_err ? max_err = abs(mat_dX[k]);
+            k += 1;
+        );
+
+        state_ptr[1] = min(state_ptr[1], 0.9);
+        state_ptr[2] = min(state_ptr[2], 0.9);
+        state_ptr[3] = min(state_ptr[3], 0.9);
+
+        iter += 1;
+    );
+);
+
+// Logique de découplage topologique (UP vs DOWN)
+function process_sample_core(vin, base_ptr)
+  local(v_out, iD)
+(
+    v_out = vin;
+    vin >= 0.0 ? (
+        solve_ebers_moll_step(base_ptr, vin, dt_os, C_up, R_up_U, R_low_U, R_p_up, R_s_U, pos_up);
+        adaa_exp(base_ptr[3], base_ptr[3], V_T);
+        iD = I_SD * (adaa_E - 1.0);
+        v_out = vin - 10000.0 * iD;
+
+        C_dn > 1e-12 ? (
+            pos_dn == 0 ? base_ptr[4] *= exp(-dt_os / (R_up_D * C_dn))
+                        : base_ptr[5] *= exp(-dt_os / (R_low_D * C_dn));
+        );
+        base_ptr[6] = 0.0; base_ptr[7] = 0.0;
+    ) : (
+        solve_ebers_moll_step(base_ptr + 4, -vin, dt_os, C_dn, R_up_D, R_low_D, R_p_dn, R_s_D, pos_dn);
+        adaa_exp(base_ptr[7], base_ptr[7], V_T);
+        iD = I_SD * (adaa_E - 1.0);
+        v_out = vin + 10000.0 * iD;
+
+        C_up > 1e-12 ? (
+            pos_up == 0 ? base_ptr[0] *= exp(-dt_os / (R_up_U * C_up))
+                        : base_ptr[1] *= exp(-dt_os / (R_low_U * C_up));
+        );
+        base_ptr[2] = 0.0; base_ptr[3] = 0.0;
+    );
+    v_out;
+);
+
+@slider
+// Mise à jour des paramètres physiques (calculé 1x par block UI)
+alpha_in = slider1;
+P_gain = 50000.0;
+R_up_div = 4700.0 + (1.0 - alpha_in) * P_gain;
+R_dn_div = 4700.0 + alpha_in * P_gain;
+G_in = R_dn_div / (R_up_div + R_dn_div);
+
+// Calibré sur 0.1V pic = 1.0 digital
+toVoltsScale = 0.1 * (1.0 + (alpha_in * 74.0));
+
+alpha_up = max(min(slider2 / 5.0, 1.0), 0.0);
+R_k_up = max(slider5, 0.0);
+R_p_up = max(slider4, 1.0);
+C_up = max(slider3 * 1e-9, 1e-15);
+pos_up = slider6;
+
+alpha_dn = max(min(slider7 / 5.0, 1.0), 0.0);
+R_k_dn = max(slider10, 0.0);
+R_p_dn = max(slider9, 1.0);
+C_dn = max(slider8 * 1e-9, 1e-15);
+pos_dn = slider11;
+
+R_up_U  = (1.0 - alpha_up) * 50000.0 + 1000.0;
+R_low_U = alpha_up * 50000.0 + 4700.0;
+R_s_U   = 10000.0 + R_k_up + R_D;
+
+R_up_D  = (1.0 - alpha_dn) * 50000.0 + 1000.0;
+R_low_D = alpha_dn * 50000.0 + 4700.0;
+R_s_D   = 10000.0 + R_k_dn + R_D;
+
+// Oversampling 2x interne
+dt_os = 1.0 / (srate * 2.0);
+
+@sample
+vin_L = spl0 * G_in * toVoltsScale;
+vin_R = spl1 * G_in * toVoltsScale;
+
+// ==============================================
+// 2x OVERSAMPLING LOOP (Left Channel)
+// Interpolation linéaire up -> NR -> Moyenne down
+// ==============================================
+vin_mid_L = (prev_vin_L + vin_L) * 0.5;
+vout1_L = process_sample_core(vin_mid_L, 0);
+vout2_L = process_sample_core(vin_L, 0);
+spl0 = ((vout1_L + vout2_L) * 0.5) / 3.0;
+prev_vin_L = vin_L;
+
+// ==============================================
+// 2x OVERSAMPLING LOOP (Right Channel)
+// ==============================================
+vin_mid_R = (prev_vin_R + vin_R) * 0.5;
+vout1_R = process_sample_core(vin_mid_R, 100);
+vout2_R = process_sample_core(vin_R, 100);
+spl1 = ((vout1_R + vout2_R) * 0.5) / 3.0;
+prev_vin_R = vin_R;
