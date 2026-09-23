@@ -41,10 +41,10 @@ The plugin features:
 
 2. **Clone the JUCE framework (tested with version 8.0.13):**
 
-# Option A: Tested version (8.0.13)
+#### Option A: Tested version (8.0.13)
 git clone --depth 1 --branch 8.0.13 https://github.com/juce-framework/JUCE.git JUCE
 
-# Option B: Latest version (master branch)
+#### Option B: Latest version (master branch)
 git clone --depth 1 https://github.com/juce-framework/JUCE.git JUCE
 
 
@@ -63,8 +63,21 @@ git clone --depth 1 https://github.com/juce-framework/JUCE.git JUCE
 
 1. **Prerequisites:**
    - Visual Studio Build Tools (or Visual Studio Community) with the **C++ Desktop Development** workload installed.
+```powershell
+winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
    - [CMake](https://cmake.org/download/) (>= 3.22) and [Git](https://git-scm.com/) added to your system `PATH`.
    - Optional: [Ninja](https://github.com/ninja-build/ninja/releases) for faster parallel builds.
+
+```powershell
+# Git and CMake
+winget install --id Git.Git -e --source winget
+winget install --id Kitware.CMake -e --source winget --override "ADD_CMAKE_TO_PATH=System"
+
+# Ninja (optionnal)
+winget install --id Ninja-build.Ninja -e --source winget
+```
 
 2. **Clone the JUCE framework (version 8.0.13):**
 
