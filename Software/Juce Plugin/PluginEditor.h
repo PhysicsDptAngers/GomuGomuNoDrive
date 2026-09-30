@@ -5,7 +5,7 @@
 #include "PluginProcessor.h"
 
 // ==============================================================================
-// CUSTOM LOOK AND FEEL (DAVIES 1510 KNOBS & MINI TOGGLE SWITCHES)
+// CUSTOM LOOK AND FEEL (DAVIES 1510 KNOBS, MINI TOGGLES & ILLUMINATED SWITCHES)
 // ==============================================================================
 class PedalLookAndFeel : public juce::LookAndFeel_V4
 {
@@ -25,7 +25,21 @@ public:
 };
 
 // ==============================================================================
-// MODULAR FLAT GRAPHIC EQ
+// FLAT ROUTING TEXT BUTTON (NO 3D BOX, YELLOW ACTIVE / GRAY INACTIVE)
+// ==============================================================================
+class RoutingButton : public juce::Button
+{
+public:
+    RoutingButton (const juce::String& name) : juce::Button (name) {}
+    void paintButton (juce::Graphics& g, bool isMouseOver, bool shouldDrawButtonAsDown) override;
+    void setActive (bool active) { isActive = active; repaint(); }
+    bool getActive() const noexcept { return isActive; }
+private:
+    bool isActive = false;
+};
+
+// ==============================================================================
+// FLAT GRAPHIC EQ
 // ==============================================================================
 class GraphicEqComponent : public juce::Component
 {
@@ -52,7 +66,7 @@ private:
 };
 
 // ==============================================================================
-// VECTOR SPEAKER CABINET BUTTON
+// CABINET BUTTON & LED INDICATORS
 // ==============================================================================
 class CabToggleButton : public juce::Button
 {
@@ -61,39 +75,40 @@ public:
     void paintButton (juce::Graphics& g, bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
 };
 
-// ==============================================================================
-// CHROME BEZEL LED INDICATOR
-// ==============================================================================
 class LedIndicator : public juce::Component
 {
 public:
+    void setColour (juce::Colour c) { ledColour = c; repaint(); }
     void setOn (bool shouldBeOn) { isOn = shouldBeOn; repaint(); }
     void paint (juce::Graphics& g) override;
 private: 
     bool isOn = true;
+    juce::Colour ledColour { juce::Colours::red };
 };
 
 // ==============================================================================
-// CATHODE RAY TUBE (CRT) SCOPES WITH PHOSPHOR BEAM GLOW
+// CATHODE RAY TUBE (CRT) SCOPES (SOFT ET HARD)
 // ==============================================================================
 class TransferCurveScope : public juce::Component
 {
 public:
-    TransferCurveScope (GomuGomuNoDrive& p) : processor (p) {}
+    TransferCurveScope (GomuGomuNoDrive& p, bool isPedalA) : processor (p), isA (isPedalA) {}
     void updatePeaks (float peakPlus, float peakMinus) { pPlus = peakPlus; pMinus = peakMinus; }
     void paint (juce::Graphics& g) override;
 private:
     GomuGomuNoDrive& processor;
+    bool isA = true;
     float pPlus = 0.0f, pMinus = 0.0f;
 };
 
 class TimeDomainScope : public juce::Component
 {
 public:
-    TimeDomainScope (GomuGomuNoDrive& p) : processor (p) {}
+    TimeDomainScope (GomuGomuNoDrive& p, bool isPedalA) : processor (p), isA (isPedalA) {}
     void paint (juce::Graphics& g) override;
 private:
     GomuGomuNoDrive& processor;
+    bool isA = true;
 };
 
 // ==============================================================================
@@ -113,41 +128,62 @@ private:
     GomuGomuNoDrive& audioProcessor;
     PedalLookAndFeel customLookAndFeel;
 
+    // Barre supérieure de routage sans bordure
+    RoutingButton btnRoutingAB   { "A -> B  (SERIAL)" };
+    RoutingButton btnRoutingBA   { "B -> A  (SERIAL)" };
+    RoutingButton btnRoutingPara { "A // B  (PARALLEL)" };
+    juce::Slider interCutSlider;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> interCutAtt;
+
     GraphicEqComponent preEqComponent;
     GraphicEqComponent postEqComponent;
 
-    TransferCurveScope oscIU;
-    TimeDomainScope oscTime;
-    LedIndicator led;
+    // Scopes dédiés
+    TransferCurveScope oscIU_A;
+    TimeDomainScope oscTime_A;
+    TransferCurveScope oscIU_B;
+    TimeDomainScope oscTime_B;
 
-    // Commandes centrales
-    juce::Slider driveSlider, outputSlider, toneSlider;
-    juce::ComboBox voicingSelector;
-    juce::TextButton footswitch;
+    // --- PÉDALE A (SOFT CLIPPING) ---
+    juce::Slider driveASlider, levelASlider, toneASlider;
+    juce::ComboBox voicingASelector;
+    juce::Slider clipAUpSlider, edgeAUpSlider, capAUpSwitch;
+    juce::Slider clipADnSlider, edgeADnSlider, capADnSwitch;
+    juce::TextButton footswitchA;
+    LedIndicator ledA;
 
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> driveAtt, outputAtt, toneAtt;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> voicingAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> footAAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> driveAAtt, levelAAtt, toneAAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> voicingAAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> clipAUpAtt, edgeAUpAtt, capAUpAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> clipADnAtt, edgeADnAtt, capADnAtt;
 
-    // Aile Ouest (UP / 西)
-    juce::Slider clipWestSlider, edgeWestSlider, kneeWestSlider, pinchWestSlider;
-    juce::Slider capWestSwitch; 
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> clipWestAtt, edgeWestAtt, kneeWestAtt, pinchWestAtt, capWestAtt;
+    // --- PÉDALE B (HARD CLIPPING) ---
+    juce::Slider driveBSlider, levelBSlider, toneBSlider;
+    juce::ComboBox voicingBSelector;
+    juce::Slider clipBUpSlider, edgeBUpSlider, capBUpSwitch, kneeBUpSlider, pinchBUpSlider;
+    juce::Slider clipBDnSlider, edgeBDnSlider, capBDnSwitch, kneeBDnSlider, pinchBDnSlider;
+    juce::TextButton footswitchB;
+    LedIndicator ledB;
 
-    // Aile Est (DOWN / 東)
-    juce::Slider clipEastSlider, edgeEastSlider, kneeEastSlider, pinchEastSlider;
-    juce::Slider capEastSwitch;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> clipEastAtt, edgeEastAtt, kneeEastAtt, pinchEastAtt, capEastAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> footBAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> driveBAtt, levelBAtt, toneBAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> voicingBAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> clipBUpAtt, edgeBUpAtt, capBUpAtt, kneeBUpAtt, pinchBUpAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> clipBDnAtt, edgeBDnAtt, capBDnAtt, kneeBDnAtt, pinchBDnAtt;
 
-    // Section Cab IR
+    // Section Cab
     CabToggleButton cabToggle;
     juce::ComboBox cabSelector;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> cabEnableAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> cabSelectAtt;
 
-    float smoothPeakPlus = 0.0f, smoothPeakMinus = 0.0f;
+    float smoothPeakA_Plus = 0.0f, smoothPeakA_Minus = 0.0f;
+    float smoothPeakB_Plus = 0.0f, smoothPeakB_Minus = 0.0f;
 
     void setupKnob (juce::Slider& slider, const juce::String& name);
     void setupSwitch (juce::Slider& slider, const juce::String& name);
+    void updateRoutingButtons (int mode);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (GomuGomuNoDriveEditor)
 };
